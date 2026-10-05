@@ -50,7 +50,7 @@ hlsSegmentCount: 3
 # Control Plane API (Used by FastAPI backend)
 # ---------------------------------------------------------------------------
 api: yes
-apiAddress: 127.0.0.1:9997
+apiAddress: 0.0.0.0:9997
 
 # ---------------------------------------------------------------------------
 # Authentication & Access Control

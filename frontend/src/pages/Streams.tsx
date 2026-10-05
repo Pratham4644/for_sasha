@@ -127,7 +127,7 @@ const StreamCell: React.FC<{
             key={`${activeWhep}-${activeHls}`}
             whepUrl={activeWhep}
             hlsUrl={activeHls}
-            readerCredentials={playback?.reader_credentials}
+            readerCredentials={playback?.reader_credentials ?? undefined}
             cameraName={`${camera.name} (${streamMode === 'ai' ? 'AI' : 'Raw'})`}
             autoPlay={true}
           />

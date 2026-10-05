@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Literal
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -208,6 +208,17 @@ class Settings(BaseSettings):
         default=24,
         validation_alias="RETENTION_CLEANUP_HOURS",
     )
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def parse_debug_flag(cls, value: object) -> object:
+        if isinstance(value, str):
+            clean = value.strip().lower()
+            if clean in {"release", "prod", "production", "off", "no", "false", "0"}:
+                return False
+            if clean in {"debug", "dev", "development", "on", "yes", "true", "1"}:
+                return True
+        return value
 
     @property
     def cors_origins(self) -> list[str]:

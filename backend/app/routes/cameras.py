@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Annotated, Any
@@ -26,7 +27,7 @@ from backend.app.services.camera import (
     sanitize_source_url,
 )
 from backend.app.services.mediamtx import mediamtx_service
-from backend.app.services.stream_manager import stream_manager
+from backend.app.services.stream_manager import stream_manager, test_camera_connectivity
 
 LOGGER = logging.getLogger("camera.platform.routes.cameras")
 router = APIRouter(prefix="/cameras", tags=["Cameras"])
@@ -143,7 +144,9 @@ async def create_camera(
                 fps=camera.configured_fps,
             )
             if started:
-                camera.status = CameraStatus.ONLINE
+                # Set CONNECTING — stream_manager lifecycle will transition to ONLINE
+                # only after MediaMTX publisher is verified
+                camera.status = CameraStatus.CONNECTING
                 if camera.ai_enabled:
                     ai_pipeline_manager.start_pipeline(camera)
         except Exception as exc:
@@ -303,16 +306,16 @@ async def start_camera_stream(
     if camera.ai_enabled:
         ai_pipeline_manager.start_pipeline(camera)
 
-    # Update camera status
-    await db.cameras.update_one({"id": camera.id}, {"$set": {"status": CameraStatus.ONLINE.value}})
+    # Set CONNECTING — lifecycle thread will update to ONLINE after publisher verified
+    await db.cameras.update_one({"id": camera.id}, {"$set": {"status": CameraStatus.CONNECTING.value}})
 
     urls = mediamtx_service.get_stream_urls(camera.media_path)
     return ApiResponse(
         success=True,
         data={
             "camera_id": camera.id,
-            "status": "online",
-            "message": "Camera stream and AI worker started.",
+            "status": "connecting",
+            "message": "Camera stream starting — will become ONLINE once publisher is confirmed.",
             "streams": urls,
         },
     )
@@ -366,14 +369,15 @@ async def restart_camera_stream(
     if camera.ai_enabled:
         ai_pipeline_manager.start_pipeline(camera)
 
-    await db.cameras.update_one({"id": camera.id}, {"$set": {"status": CameraStatus.ONLINE.value}})
+    # Set CONNECTING — will transition to ONLINE once publisher confirmed
+    await db.cameras.update_one({"id": camera.id}, {"$set": {"status": CameraStatus.CONNECTING.value}})
 
     return ApiResponse(
         success=True,
         data={
             "camera_id": camera.id,
-            "status": "restarted",
-            "message": "Camera stream restarted.",
+            "status": "connecting",
+            "message": "Camera stream restarting — will become ONLINE once publisher is confirmed.",
         },
     )
 
@@ -452,25 +456,46 @@ async def get_camera_status(
     media_status = await mediamtx_service.get_path_status(camera.media_path)
     is_ffmpeg_running = stream_manager.is_running(camera.id)
     is_ai_running = ai_pipeline_manager.is_running(camera.id)
+    stream_info = stream_manager.get_stream_info(camera.id)
 
-    effective_status = "online" if (media_status.get("online") or is_ffmpeg_running) else "offline"
+    # True ONLINE requires MediaMTX sourceReady=true (frames actually flowing)
+    video_available = bool(media_status.get("video_available") or media_status.get("source_ready"))
+    publisher_connected = bool(media_status.get("publisher_connected"))
+
+    if video_available:
+        effective_status = "online"
+        new_db_status = CameraStatus.ONLINE
+    elif is_ffmpeg_running or publisher_connected:
+        effective_status = "connecting"
+        new_db_status = CameraStatus.CONNECTING
+    else:
+        effective_status = "offline"
+        new_db_status = CameraStatus.OFFLINE
 
     # Update database if status changed
-    if effective_status != camera.status.value.lower():
-        new_status = CameraStatus.ONLINE if effective_status == "online" else CameraStatus.OFFLINE
-        await db.cameras.update_one({"id": camera.id}, {"$set": {"status": new_status.value}})
+    if new_db_status.value != camera.status.value:
+        await db.cameras.update_one({"id": camera.id}, {"$set": {"status": new_db_status.value}})
 
     return ApiResponse(
         success=True,
         data={
             "camera_id": camera.id,
             "name": camera.name,
-            "status": effective_status,
+            "status": effective_status.upper(),
             "online": effective_status == "online",
             "ffmpeg_running": is_ffmpeg_running,
+            "mediamtx_publisher": bool(media_status.get("publisher_connected") or media_status.get("source_ready")),
+            "mediamtx_source_ready": media_status.get("source_ready", False),
+            "video_available": video_available,
+            "ai_enabled": camera.ai_enabled,
+            "ai_status": "RUNNING" if is_ai_running else ("STOPPED" if camera.ai_enabled else "DISABLED"),
             "ai_running": is_ai_running,
             "readers": media_status.get("readers", 0),
+            "tracks": media_status.get("tracks", []),
             "media_path": camera.media_path,
+            "stream_state": stream_info.get("state"),
+            "last_error": stream_info.get("last_error"),
+            "reconnect_attempt": stream_info.get("reconnect_attempt", 0),
         },
     )
 
@@ -514,16 +539,40 @@ async def test_camera_connection(
     camera_id: str,
     current_user: User = Depends(require_permission("camera:read")),
 ):
-    """Tests connectivity to the camera source."""
+    """
+    Performs full 5-stage RTSP source connectivity test:
+    DNS resolution -> TCP port probe -> RTSP auth check -> Stream open -> FFmpeg frame decode.
+    """
     camera = await _resolve_camera(camera_id, current_user)
     username, password = get_camera_credentials(camera)
-    try:
-        source_url = stream_manager._build_source_url(camera.source_url_template, username, password)
-        # Check MediaMTX path status
-        m_stat = await mediamtx_service.get_path_status(camera.media_path)
-        is_running = stream_manager.is_running(camera.id)
-        ok = is_running or m_stat.get("online", False)
-        msg = f"Camera {camera.name} is streaming and reachable." if ok else "Camera is registered and ready to start."
-        return ApiResponse(success=True, data={"ok": True, "message": msg, "online": ok})
-    except Exception as exc:
-        return ApiResponse(success=False, error={"message": f"Connection test failed: {exc}"})
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: test_camera_connectivity(
+            camera.source_url_template,
+            username=username,
+            password=password,
+            timeout=5.0,
+        ),
+    )
+    return ApiResponse(success=result.get("success", False), data=result)
+
+
+@router.post("/test-source", response_model=ApiResponse[dict[str, Any]])
+async def test_source_url(
+    payload: dict[str, Any],
+    current_user: User = Depends(require_permission("camera:create")),
+):
+    """
+    Tests an unpersisted camera source URL and credentials before creating a camera.
+    """
+    url = payload.get("source_url", "")
+    username = payload.get("username")
+    password = payload.get("password")
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: test_camera_connectivity(url, username=username, password=password, timeout=5.0),
+    )
+    return ApiResponse(success=result.get("success", False), data=result)

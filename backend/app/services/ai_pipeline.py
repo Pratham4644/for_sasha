@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 import cv2
+import httpx
 import numpy as np
 
 from backend.app.config import settings
@@ -71,6 +72,23 @@ class CameraAIPipeline:
         else:
             self.output_url = f"rtsp://{host}:{port}/{self.media_path}-ai"
 
+    def _is_source_ready(self) -> bool:
+        """Return true only when MediaMTX reports an active publisher for this path."""
+        api_url = settings.mediamtx_api_url.rstrip("/")
+        auth = None
+        if settings.mediamtx_publish_username and settings.mediamtx_publish_password:
+            auth = (settings.mediamtx_publish_username, settings.mediamtx_publish_password)
+        try:
+            with httpx.Client(timeout=2.0) as client:
+                res = client.get(f"{api_url}/v3/paths/get/{self.media_path}", auth=auth)
+            if res.status_code != 200:
+                return False
+            detail = res.json()
+            return bool(detail.get("sourceReady", detail.get("ready", False)))
+        except Exception as exc:
+            LOGGER.debug("AI readiness check failed for %s: %s", self.camera_id, exc)
+            return False
+
     def start(self) -> None:
         """Starts the AI pipeline background worker."""
         if self._thread and self._thread.is_alive():
@@ -89,23 +107,35 @@ class CameraAIPipeline:
         """Stops the AI pipeline and cleanly terminates the FFmpeg publisher."""
         LOGGER.info("Stopping AI Pipeline for camera %s...", self.camera_id)
         self._stop_event.set()
-
-        if self._ffmpeg_proc:
-            try:
-                if self._ffmpeg_proc.stdin:
-                    self._ffmpeg_proc.stdin.close()
-                self._ffmpeg_proc.terminate()
-                self._ffmpeg_proc.wait(timeout=2)
-            except Exception:
-                try:
-                    self._ffmpeg_proc.kill()
-                except Exception:
-                    pass
-            self._ffmpeg_proc = None
+        self._stop_ffmpeg_publisher()
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3)
         LOGGER.info("AI Pipeline stopped for camera %s", self.camera_id)
+
+    def _stop_ffmpeg_publisher(self) -> None:
+        """Terminates any existing AI overlay FFmpeg publisher (no duplicates)."""
+        proc = self._ffmpeg_proc
+        self._ffmpeg_proc = None
+        if not proc:
+            return
+        try:
+            if proc.stdin:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     def _start_ffmpeg_publisher(self, width: int, height: int, fps: float) -> subprocess.Popen:
         """Starts the FFmpeg subprocess to publish the annotated frames to MediaMTX."""
@@ -144,9 +174,6 @@ class CameraAIPipeline:
 
     def _run_pipeline(self) -> None:
         """Main AI pipeline execution loop."""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
         # Give MediaMTX a moment to establish the primary camera stream
         time.sleep(1.0)
 
@@ -156,6 +183,14 @@ class CameraAIPipeline:
 
         while not self._stop_event.is_set():
             if cap is None or not cap.isOpened():
+                if not self._is_source_ready():
+                    retries += 1
+                    if retries > max_retries:
+                        LOGGER.info("AI Pipeline for %s waiting for MediaMTX publisher on %s", self.camera_id, self.media_path)
+                        retries = 0
+                    time.sleep(2.0)
+                    continue
+
                 cap = cv2.VideoCapture(self.input_url, cv2.CAP_FFMPEG)
                 if not cap.isOpened():
                     retries += 1
@@ -172,8 +207,9 @@ class CameraAIPipeline:
             if fps <= 0 or fps > 60:
                 fps = 15.0
 
-            # Start FFmpeg publisher for AI processed stream
+            # Start FFmpeg publisher for AI processed stream (replace any leftover)
             try:
+                self._stop_ffmpeg_publisher()
                 self._ffmpeg_proc = self._start_ffmpeg_publisher(width, height, fps)
             except Exception as exc:
                 LOGGER.error("Failed to start AI stream FFmpeg publisher: %s", exc)
@@ -181,76 +217,77 @@ class CameraAIPipeline:
             last_sample_time = 0.0
             current_detections: list[dict[str, Any]] = []
 
-            while not self._stop_event.is_set():
-                ret, frame = cap.read()
-                if not ret:
-                    LOGGER.debug("AI Pipeline read empty frame on %s", self.camera_id)
-                    time.sleep(0.05)
-                    break
-
-                now = time.monotonic()
-
-                # Sample frame for AI inference at configured interval
-                if now - last_sample_time >= self.inference_interval:
-                    last_sample_time = now
-                    # Encode frame as JPEG for SageMaker
-                    success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                    if success:
-                        jpeg_bytes = encoded.tobytes()
-                        result, latency_ms = self.sagemaker.invoke(jpeg_bytes)
-                        if result and isinstance(result, dict):
-                            raw_dets = result.get("detections", [])
-                            valid_dets = [
-                                d for d in raw_dets
-                                if d.get("confidence", 0.0) >= self.confidence_threshold
-                            ]
-                            current_detections = valid_dets
-
-                            # If detections were made, record event to MongoDB and broadcast
-                            if valid_dets:
-                                self._persist_and_broadcast(valid_dets, latency_ms, loop)
-
-                # Overlay bounding boxes on the frame
-                annotated_frame = frame.copy()
-                for det in current_detections:
-                    class_name = det.get("class_name", "object")
-                    conf = det.get("confidence", 0.0)
-                    bbox = det.get("bbox", [])
-                    if len(bbox) == 4:
-                        x1, y1, x2, y2 = map(int, bbox)
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        label = f"{class_name} {conf:.0%}"
-                        cv2.putText(
-                            annotated_frame,
-                            label,
-                            (x1, max(25, y1 - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            (0, 255, 0),
-                            2,
-                        )
-
-                # Send processed frame to FFmpeg publisher
-                if self._ffmpeg_proc and self._ffmpeg_proc.stdin:
-                    try:
-                        self._ffmpeg_proc.stdin.write(annotated_frame.tobytes())
-                    except (BrokenPipeError, OSError):
-                        LOGGER.debug("AI FFmpeg pipe closed, will restart publisher.")
+            try:
+                while not self._stop_event.is_set():
+                    ret, frame = cap.read()
+                    if not ret:
+                        LOGGER.debug("AI Pipeline read empty frame on %s", self.camera_id)
+                        time.sleep(0.05)
                         break
 
-            if cap:
-                cap.release()
-                cap = None
+                    now = time.monotonic()
+
+                    # Sample frame for AI inference at configured interval
+                    if now - last_sample_time >= self.inference_interval:
+                        last_sample_time = now
+                        # Encode frame as JPEG for SageMaker
+                        success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                        if success:
+                            jpeg_bytes = encoded.tobytes()
+                            result, latency_ms = self.sagemaker.invoke(jpeg_bytes)
+                            if result and isinstance(result, dict):
+                                raw_dets = result.get("detections", [])
+                                valid_dets = [
+                                    d for d in raw_dets
+                                    if d.get("confidence", 0.0) >= self.confidence_threshold
+                                ]
+                                current_detections = valid_dets
+
+                                # If detections were made, record event to MongoDB and broadcast
+                                if valid_dets:
+                                    self._persist_and_broadcast(valid_dets, latency_ms)
+
+                    # Overlay bounding boxes on the frame
+                    annotated_frame = frame.copy()
+                    for det in current_detections:
+                        class_name = det.get("class_name", "object")
+                        conf = det.get("confidence", 0.0)
+                        bbox = det.get("bbox", [])
+                        if len(bbox) == 4:
+                            x1, y1, x2, y2 = map(int, bbox)
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            label = f"{class_name} {conf:.0%}"
+                            cv2.putText(
+                                annotated_frame,
+                                label,
+                                (x1, max(25, y1 - 10)),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6,
+                                (0, 255, 0),
+                                2,
+                            )
+
+                    # Send processed frame to FFmpeg publisher
+                    if self._ffmpeg_proc and self._ffmpeg_proc.stdin:
+                        try:
+                            self._ffmpeg_proc.stdin.write(annotated_frame.tobytes())
+                        except (BrokenPipeError, OSError):
+                            LOGGER.debug("AI FFmpeg pipe closed, will restart publisher.")
+                            break
+            finally:
+                self._stop_ffmpeg_publisher()
+                if cap:
+                    cap.release()
+                    cap = None
 
         if cap:
             cap.release()
-        loop.close()
+            self._stop_ffmpeg_publisher()
 
     def _persist_and_broadcast(
         self,
         detections: list[dict[str, Any]],
         latency_ms: float,
-        loop: asyncio.AbstractEventLoop,
     ) -> None:
         """Stores structured DetectionEvent into MongoDB and broadcasts to WebSocket clients."""
         try:
@@ -310,7 +347,16 @@ class CameraAIPipeline:
                 except Exception as exc:
                     LOGGER.debug("Async persistence/broadcast error: %s", exc)
 
-            loop.run_until_complete(_save_and_broadcast())
+            loop = ai_pipeline_manager.main_loop
+            if loop and loop.is_running():
+                asyncio.run_coroutine_threadsafe(_save_and_broadcast(), loop)
+            else:
+                try:
+                    cur = asyncio.get_event_loop()
+                    if cur.is_running():
+                        asyncio.run_coroutine_threadsafe(_save_and_broadcast(), cur)
+                except Exception:
+                    pass
         except Exception as exc:
             LOGGER.error("Failed to persist and broadcast detection event: %s", exc)
 
@@ -321,6 +367,11 @@ class AIPipelineManager:
     def __init__(self) -> None:
         self.pipelines: dict[str, CameraAIPipeline] = {}
         self.lock = threading.Lock()
+        self.main_loop: asyncio.AbstractEventLoop | None = None
+
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Sets the application's primary event loop for thread-safe event dispatch."""
+        self.main_loop = loop
 
     def start_pipeline(self, camera: Camera) -> None:
         """Starts an AI pipeline for the camera if not already active."""

@@ -306,7 +306,7 @@ export const CameraDetail: React.FC = () => {
             key={`${activeWhepUrl}-${activeHlsUrl}`}
             whepUrl={activeWhepUrl}
             hlsUrl={activeHlsUrl}
-            readerCredentials={playback?.reader_credentials}
+            readerCredentials={playback?.reader_credentials ?? undefined}
             cameraName={`${camera.name} (${streamMode === 'ai' ? 'AI Stream' : 'Raw Stream'})`}
           />
 

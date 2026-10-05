@@ -25,7 +25,9 @@ class UserRole(str, Enum):
 class CameraStatus(str, Enum):
     ONLINE = "ONLINE"
     OFFLINE = "OFFLINE"
-    STARTING = "STARTING"
+    CONNECTING = "CONNECTING"
+    DEGRADED = "DEGRADED"
+    STOPPING = "STOPPING"
     ERROR = "ERROR"
     UNKNOWN = "UNKNOWN"
 

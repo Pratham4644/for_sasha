@@ -33,3 +33,7 @@ def test_ffmpeg_command_generation():
     assert "scale=1280:720" in cmd
     assert "-f" in cmd
     assert "rtsp" in cmd
+    # FFmpeg 9.x RTSP demuxer uses -timeout (us), not legacy -stimeout
+    assert "-stimeout" not in cmd
+    assert "-timeout" in cmd
+    assert "-rtsp_transport" in cmd

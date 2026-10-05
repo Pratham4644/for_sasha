@@ -35,37 +35,108 @@ class MediaMTXService:
             LOGGER.debug("Failed to reach MediaMTX API (%s): %s", url, exc)
             return None
 
+    async def get_path_detail(self, path_name: str) -> dict[str, Any] | None:
+        """Queries a single path by name directly from MediaMTX API."""
+        url = f"{self.api_url}/v3/paths/get/{path_name}"
+        auth = self._get_auth()
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                res = await client.get(url, auth=auth)
+                if res.status_code == 200:
+                    return res.json()
+                return None
+        except Exception as exc:
+            LOGGER.debug("Failed to get path detail for %s: %s", path_name, exc)
+            return None
+
     async def get_path_status(self, path_name: str) -> dict[str, Any]:
         """
         Queries status of an individual media path.
-        Returns:
-            {"online": bool, "status": "online" | "offline" | "unknown", "readers": int}
-        """
-        paths = await self.get_paths()
-        if paths is None:
-            return {
-                "online": False,
-                "status": "unknown",
-                "message": "MediaMTX Control API unavailable",
-                "readers": 0,
-            }
 
-        target = next((p for p in paths if p.get("name") == path_name), None)
-        if target is None:
+        MediaMTX v3 API uses:
+            - sourceReady: bool    → true when a publisher is actively sending frames
+            - source.type          → "rtspSession" / "rtmpSession" etc. when publisher connected
+            - readers              → list of active consumers
+            - tracks               → list of track descriptors (video/audio)
+
+        Returns:
+            {
+                "online": bool,
+                "source_ready": bool,
+                "publisher_connected": bool,
+                "video_available": bool,
+                "status": "online" | "publisher_waiting" | "offline" | "unknown",
+                "readers": int,
+                "tracks": list,
+                "raw": dict | None,
+            }
+        """
+        # Try direct path query first (faster than listing all paths)
+        detail = await self.get_path_detail(path_name)
+
+        if detail is None:
+            # Fall back to listing all paths
+            paths = await self.get_paths()
+            if paths is None:
+                return {
+                    "online": False,
+                    "source_ready": False,
+                    "publisher_connected": False,
+                    "video_available": False,
+                    "status": "unknown",
+                    "message": "MediaMTX Control API unavailable",
+                    "readers": 0,
+                    "tracks": [],
+                    "raw": None,
+                }
+            detail = next((p for p in paths if p.get("name") == path_name), None)
+
+        if detail is None:
             return {
                 "online": False,
+                "source_ready": False,
+                "publisher_connected": False,
+                "video_available": False,
                 "status": "offline",
                 "readers": 0,
+                "tracks": [],
+                "raw": None,
             }
 
-        is_online = bool(target.get("ready") or target.get("online", False))
-        readers = len(target.get("readers", []))
+        # MediaMTX v3: sourceReady = publisher is actively streaming frames
+        source_ready = bool(detail.get("sourceReady", detail.get("ready", False)))
+        source = detail.get("source") or {}
+        publisher_connected = bool(source.get("type"))  # type is set when publisher is connected
+        readers = len(detail.get("readers", []))
+        tracks = detail.get("tracks", [])
+
+        # Video is available when sourceReady=true and there is a video track
+        has_video_track = any(
+            (
+                t.get("type") in ("H264", "H265", "VP8", "VP9", "AV1", "video")
+                or t.get("codec") in ("H264", "H265", "VP8", "VP9", "AV1")
+            )
+            if isinstance(t, dict)
+            else str(t).upper() in ("H264", "H265", "VP8", "VP9", "AV1", "VIDEO")
+            for t in tracks
+        ) if tracks else source_ready  # If tracks not reported, rely on sourceReady
+
+        if source_ready:
+            status_str = "online"
+        elif publisher_connected:
+            status_str = "publisher_waiting"
+        else:
+            status_str = "offline"
 
         return {
-            "online": is_online,
-            "status": "online" if is_online else "offline",
+            "online": source_ready,
+            "source_ready": source_ready,
+            "publisher_connected": publisher_connected,
+            "video_available": source_ready and has_video_track,
+            "status": status_str,
             "readers": readers,
-            "tracks": target.get("tracks", []),
+            "tracks": tracks,
+            "raw": detail,
         }
 
     async def provision_path(self, path_name: str, source: str = "publisher") -> bool:
