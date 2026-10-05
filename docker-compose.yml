@@ -1,0 +1,45 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: camera-platform-mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"       # RTSP TCP
+      - "8888:8888"       # HLS
+      - "8889:8889"       # WebRTC WHEP
+      - "8189:8189/udp"   # WebRTC ICE
+      - "9997:9997"       # Control API
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      - MTX_PROTOCOLS=tcp
+      - MTX_WEBRTCADDITIONALHOSTS=${PUBLIC_HOST:-127.0.0.1}
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: camera-platform-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    environment:
+      - MEDIAMTX_HOST=mediamtx
+      - MEDIAMTX_RTSP_PORT=8554
+      - MEDIAMTX_API_URL=http://mediamtx:9997
+    depends_on:
+      - mediamtx
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: camera-platform-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+      - mediamtx

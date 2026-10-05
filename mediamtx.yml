@@ -1,0 +1,99 @@
+###############################################################################
+# MediaMTX Configuration - Dynamic Multi-Camera Streaming Platform
+#
+# Pipeline Architecture:
+# Camera -> FFmpeg -> RTSP (8554) -> MediaMTX -> WebRTC WHEP (8889) / HLS (8888) -> Browser
+#                                      |
+#                                      v
+#                           AI Worker (RTSP pull)
+#                                      |
+#                                      v
+#                                  SageMaker
+#                                      |
+#                                      v
+#                    Annotated Stream -> RTSP push ({camera_id}-ai)
+###############################################################################
+
+# ---------------------------------------------------------------------------
+# Global Settings
+# ---------------------------------------------------------------------------
+logLevel: info
+logDestinations: [stdout]
+
+# ---------------------------------------------------------------------------
+# RTSP Ingestion & Relaying
+# ---------------------------------------------------------------------------
+rtsp: yes
+rtspAddress: :8554
+protocols: [tcp]
+
+# ---------------------------------------------------------------------------
+# WebRTC (WHEP & Browser Playback)
+# ---------------------------------------------------------------------------
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+# WebRTC Local / Public IP handling
+webrtcHandshakeTimeout: 10s
+
+# ---------------------------------------------------------------------------
+# HLS (HTTP Live Streaming)
+# ---------------------------------------------------------------------------
+hls: yes
+hlsAddress: :8888
+hlsAllowOrigins: ['*']
+hlsVariant: mpegts
+hlsSegmentDuration: 1s
+hlsSegmentCount: 3
+
+# ---------------------------------------------------------------------------
+# Control Plane API (Used by FastAPI backend)
+# ---------------------------------------------------------------------------
+api: yes
+apiAddress: 127.0.0.1:9997
+
+# ---------------------------------------------------------------------------
+# Authentication & Access Control
+# ---------------------------------------------------------------------------
+authInternalUsers:
+  # Internal / Edge publisher account used by FFmpeg and AI workers
+  - user: edge_publisher
+    pass: dev_mediamtx_pub_pwd_secure
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: api
+
+  # Friend system compatibility publisher user
+  - user: PS
+    pass: ""
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: api
+
+  # Frontend WebRTC / HLS reader account
+  - user: webrtc_reader
+    pass: dev_mediamtx_read_pwd_secure
+    ips: []
+    permissions:
+      - action: read
+
+  # Anonymous read access for browser players
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+
+# ---------------------------------------------------------------------------
+# DYNAMIC CAMERA PATH CONFIGURATION
+# ---------------------------------------------------------------------------
+# Uses MediaMTX dynamic path routing ('all_others' pattern)
+# Any stream path published (e.g. camera_001, camera_001-ai, cam_uuid)
+# is automatically accepted and published without modifying this file.
+paths:
+  all_others:
+    source: publisher

@@ -1,0 +1,42 @@
+# Production Caddyfile - Reverse Proxy & TLS Termination
+# Configurable domain via environment variable {$DOMAIN:localhost}
+{$DOMAIN:localhost} {
+    # Automatic HTTPS enabled by default when DOMAIN is set to a public FQDN
+    # For local testing, Caddy issues an internal certificate automatically
+
+    # Logging
+    log {
+        output stdout
+        format console
+    }
+
+    # Backend API and WebSockets
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    handle /ws/* {
+        reverse_proxy backend:8000
+    }
+
+    # MediaMTX WebRTC (WHEP)
+    handle /webrtc/* {
+        uri strip_prefix /webrtc
+        reverse_proxy mediamtx:8889
+    }
+
+    # MediaMTX HLS
+    handle /hls/* {
+        uri strip_prefix /hls
+        reverse_proxy mediamtx:8888 {
+            header_down Location ^/(.*)$ /hls/$1
+        }
+    }
+
+    # Dynamic React Frontend SPA
+    handle {
+        root * /srv/frontend/dist
+        try_files {path} /index.html
+        file_server
+    }
+}
