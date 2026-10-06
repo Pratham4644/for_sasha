@@ -188,6 +188,67 @@ export const Logs: React.FC = () => {
     return `${mins}m ${rem.toFixed(0)}s`;
   };
 
+  const formatDetectionSnapshotText = (log: DetectionLog): string => {
+    if (log.detections && log.detections.length > 0) {
+      const counts: Record<string, number> = {};
+      for (const d of log.detections) {
+        const cls = (d.class_name || 'Object').trim();
+        counts[cls] = (counts[cls] || 0) + 1;
+      }
+      const parts = Object.entries(counts).map(([cls, count]) => {
+        let name = cls.charAt(0).toUpperCase() + cls.slice(1).toLowerCase();
+        if (name.toLowerCase() === 'person') {
+          name = count > 1 ? 'Persons' : 'Person';
+        } else if (count > 1 && !name.endsWith('s')) {
+          name += 's';
+        }
+        return `${count} ${name}`;
+      });
+      return parts.join(' · ');
+    }
+    const cls = (log.class_name || 'Object').trim();
+    let name = cls.charAt(0).toUpperCase() + cls.slice(1).toLowerCase();
+    if (name.toLowerCase() === 'person') name = 'Person';
+    return `1 ${name}`;
+  };
+
+  const formatSnapshotTime = (isoStr: string): string => {
+    try {
+      const d = new Date(isoStr);
+      return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+    } catch {
+      return isoStr;
+    }
+  };
+
+  const cameraGroups = React.useMemo(() => {
+    const groups: {
+      cameraId: string;
+      cameraName: string;
+      events: DetectionLog[];
+    }[] = [];
+    const groupMap = new Map<string, { cameraId: string; cameraName: string; events: DetectionLog[] }>();
+
+    for (const log of detectionLogs) {
+      const cid = log.camera_id || 'unknown';
+      let g = groupMap.get(cid);
+      if (!g) {
+        const camObj = cameras.find((c) => c.id === cid);
+        const cname = log.camera_name || camObj?.name || cid;
+        g = { cameraId: cid, cameraName: cname, events: [] };
+        groupMap.set(cid, g);
+        groups.push(g);
+      }
+      g.events.push(log);
+    }
+
+    for (const g of groups) {
+      g.events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    }
+
+    return groups;
+  }, [detectionLogs, cameras]);
+
   return (
     <div className="space-y-6">
       {/* ── Page Header ─────────────────────────────────────────────────── */}
@@ -372,103 +433,97 @@ export const Logs: React.FC = () => {
             </div>
           )}
 
-          {/* Detection Events Table */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-950/70 border-b border-slate-800 text-slate-400 uppercase text-[10px] tracking-wider font-semibold">
-                  <tr>
-                    <th className="p-4">Timestamp</th>
-                    <th className="p-4">Camera</th>
-                    <th className="p-4">Detection / Class</th>
-                    <th className="p-4">Confidence</th>
-                    <th className="p-4">Model & Latency</th>
-                    <th className="p-4">Duration</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800">
-                  {isLoadingDetections ? (
-                    <tr>
-                      <td colSpan={6} className="p-12 text-center text-slate-500">
-                        <div className="flex flex-col items-center gap-2">
-                          <RefreshCw className="w-5 h-5 text-emerald-500 animate-spin" />
-                          <span>Loading detection logs...</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : detectionLogs.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="p-16 text-center text-slate-500">
-                        <Layers className="w-10 h-10 text-slate-700 mx-auto mb-3" />
-                        <p className="text-sm font-medium text-slate-400">No detection data available</p>
-                        <p className="text-xs text-slate-600 mt-1">
-                          Detection logs will appear here once the AI pipeline records events.
-                        </p>
-                      </td>
-                    </tr>
-                  ) : (
-                    detectionLogs.map((log) => (
-                      <tr key={log.id} className="hover:bg-slate-800/40 transition-colors">
-                        <td className="p-4 font-mono text-slate-400 whitespace-nowrap">
-                          {new Date(log.timestamp).toLocaleString()}
-                        </td>
-                        <td className="p-4">
-                          <div className="flex items-center gap-2">
-                            <span className="p-1 rounded bg-slate-800 border border-slate-700 text-slate-400">
-                              <Video className="w-3 h-3" />
-                            </span>
-                            <span className="font-semibold text-slate-200">
-                              {log.camera_name || log.camera_id}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="p-4">
-                          <span className="px-2 py-0.5 rounded font-mono text-[11px] font-semibold border bg-emerald-950/60 text-emerald-400 border-emerald-800">
-                            {log.class_name}
+          {/* Grouped Camera Detection Sections */}
+          {isLoadingDetections ? (
+            <div className="p-16 bg-slate-900 border border-slate-800 rounded-2xl flex flex-col items-center justify-center gap-2 text-slate-500 shadow-sm">
+              <RefreshCw className="w-5 h-5 text-emerald-500 animate-spin" />
+              <span className="text-xs">Loading detection logs...</span>
+            </div>
+          ) : detectionLogs.length === 0 ? (
+            <div className="p-16 bg-slate-900 border border-slate-800 rounded-2xl text-center text-slate-500 shadow-sm">
+              <Layers className="w-10 h-10 text-slate-700 mx-auto mb-3" />
+              <p className="text-sm font-medium text-slate-400">No detection data available</p>
+              <p className="text-xs text-slate-600 mt-1">
+                Detection logs will appear here once the AI pipeline records events.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {cameraGroups.map((section) => (
+                <div
+                  key={section.cameraId}
+                  className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm"
+                >
+                  {/* Camera Header Banner */}
+                  <div className="bg-slate-950 px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                        <Video className="w-4 h-4" />
+                      </div>
+                      <span className="text-sm font-bold font-mono tracking-wider text-white uppercase">
+                        CAMERA: {section.cameraName}
+                      </span>
+                    </div>
+                    <span className="text-xs font-mono text-slate-400 bg-slate-900 px-2.5 py-1 rounded-md border border-slate-800">
+                      {section.events.length} snapshot{section.events.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+
+                  {/* Chronological Event Entries */}
+                  <div className="p-6 space-y-4">
+                    {section.events.map((event) => (
+                      <div
+                        key={event.id}
+                        className="p-3.5 bg-slate-950/60 rounded-xl border border-slate-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:border-slate-700 transition-colors"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-baseline gap-2 sm:gap-6">
+                          <span className="text-xs font-mono font-bold text-slate-400 shrink-0 min-w-[75px]">
+                            {formatSnapshotTime(event.timestamp)}
                           </span>
-                        </td>
-                        <td className="p-4 font-mono text-slate-300">
-                          {formatConfidence(log.confidence)}
-                        </td>
-                        <td className="p-4 font-mono text-[11px] text-slate-300">
-                          <span className="text-indigo-400 font-medium">{log.model_name || 'yolo'}</span>
-                          {log.inference_latency_ms ? (
-                            <span className="text-slate-500 block text-[10px]">
-                              {log.inference_latency_ms.toFixed(0)} ms
+                          <span className="text-sm font-semibold text-emerald-300 tracking-wide">
+                            {formatDetectionSnapshotText(event)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px] font-mono text-slate-500 self-end sm:self-auto">
+                          {event.confidence ? (
+                            <span className="text-slate-400">
+                              Peak: {formatConfidence(event.confidence)}
                             </span>
                           ) : null}
-                        </td>
-                        <td className="p-4 font-mono text-slate-400">
-                          {formatDuration(log.duration_seconds)}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                          {event.inference_latency_ms ? (
+                            <span className="text-slate-600">
+                              • {event.inference_latency_ms.toFixed(0)}ms
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
+          )}
 
-            {/* Pagination Controls */}
-            <div className="p-4 bg-slate-950/60 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
-              <span>
-                Page {detPage} of {totalDetPages}
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setDetPage((p) => Math.max(1, p - 1))}
-                  disabled={detPage <= 1}
-                  className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800 text-slate-300"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => setDetPage((p) => Math.min(totalDetPages, p + 1))}
-                  disabled={detPage >= totalDetPages}
-                  className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800 text-slate-300"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
+          {/* Pagination Controls */}
+          <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl flex items-center justify-between text-xs text-slate-400">
+            <span>
+              Page {detPage} of {totalDetPages}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setDetPage((p) => Math.max(1, p - 1))}
+                disabled={detPage <= 1}
+                className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800 text-slate-300"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setDetPage((p) => Math.min(totalDetPages, p + 1))}
+                disabled={detPage >= totalDetPages}
+                className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800 text-slate-300"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
             </div>
           </div>
         </>

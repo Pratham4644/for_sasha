@@ -101,6 +101,16 @@ async def login(req: LoginRequest, response: Response):
     token = create_access_token(user)
     set_auth_cookie(response, token)
 
+    from backend.app.routes.logs import record_audit_log
+    await record_audit_log(
+        action="user:login",
+        resource_type="auth",
+        resource_id=user.id,
+        user_id=user.id,
+        organization_id=user.organization_id,
+        details={"email": user.email, "role": user.role.value if hasattr(user.role, "value") else str(user.role)},
+    )
+
     return ApiResponse(
         success=True,
         data={

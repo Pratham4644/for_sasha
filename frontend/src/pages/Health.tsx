@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
   Activity,
+  Camera,
   CheckCircle,
+  Cpu,
   Database,
   RefreshCw,
   Server,
@@ -116,14 +118,26 @@ export const Health: React.FC = () => {
           <HealthCard
             icon={Database}
             title="MongoDB"
-            ok={health.database}
+            ok={Boolean(health.database)}
             description={health.database ? 'Database connection established and healthy' : 'Database connection unavailable or unreachable'}
           />
           <HealthCard
             icon={Activity}
             title="MediaMTX Streaming"
-            ok={health.status === 'healthy'}
-            description={health.status === 'healthy' ? 'Media plane responding' : 'Media engine may be degraded'}
+            ok={health.mediamtx_ok ?? (health.status === 'healthy')}
+            description={health.mediamtx === 'connected' || health.mediamtx_ok ? 'MediaMTX streaming server is reachable and active' : 'Media engine may be degraded or unreachable'}
+          />
+          <HealthCard
+            icon={Camera}
+            title="Camera Status"
+            ok={Boolean(health.cameras ? health.cameras.online > 0 : true)}
+            description={health.cameras ? `${health.cameras.online} of ${health.cameras.total} cameras streaming online` : 'Camera streams operational'}
+          />
+          <HealthCard
+            icon={Cpu}
+            title="AI Inference Worker"
+            ok={Boolean(health.ai ? health.ai.ok : true)}
+            description={health.ai ? `${health.ai.active_pipelines} active pipeline(s) running 24/7 (${health.ai.model || 'YOLO'})` : 'AI inference pipeline running 24/7'}
           />
         </div>
       )}

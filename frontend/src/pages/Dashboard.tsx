@@ -143,6 +143,7 @@ export const Dashboard: React.FC = () => {
   const [analytics, setAnalytics] = useState<FullAnalytics | null>(null);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [healthStatus, setHealthStatus] = useState<string>('Unknown');
+  const [aiHealth, setAiHealth] = useState<{ status: string; active_cameras: number; mode?: string } | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -168,15 +169,17 @@ export const Dashboard: React.FC = () => {
         granularity,
       };
 
-      const [analyticsData, camsData, healthData] = await Promise.all([
+      const [analyticsData, camsData, healthData, aiHealthData] = await Promise.all([
         api.get<FullAnalytics>('/analytics', queryParams),
         api.get<Camera[]>('/cameras'),
         api.get<{ status: string }>('/health/public').catch(() => ({ status: 'ok' })),
+        api.get<{ status: string; active_cameras: number; mode?: string }>('/health/ai').catch(() => null),
       ]);
 
       setAnalytics(analyticsData);
       setCameras(camsData || []);
       setHealthStatus(healthData?.status === 'ok' ? 'Online' : 'Degraded');
+      setAiHealth(aiHealthData);
     } catch (err: any) {
       setError(err.message || 'Failed to load analytics data');
     } finally {
@@ -591,10 +594,21 @@ export const Dashboard: React.FC = () => {
               <span className="text-xs font-semibold text-slate-300">AI / Inference Pipeline</span>
             </div>
             <div className="flex items-center gap-2 mt-2">
-              <span className="h-2 w-2 rounded-full bg-slate-600" />
-              <span className="text-xs text-slate-500">
-                AI pipeline not connected
-              </span>
+              {aiHealth && (aiHealth.status === 'healthy' || (aiHealth.active_cameras ?? 0) > 0) ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs text-slate-200">
+                    Active ({aiHealth.active_cameras} {aiHealth.active_cameras === 1 ? 'stream' : 'streams'})
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-slate-600" />
+                  <span className="text-xs text-slate-500">
+                    {aiHealth?.status === 'disabled' ? 'AI disabled' : 'Idle / Standby'}
+                  </span>
+                </>
+              )}
             </div>
           </div>
         </div>

@@ -51,50 +51,90 @@ def build_detection_filter(
     min_confidence: float | None = None,
     search: str | None = None,
 ) -> dict:
-    base_filter: dict = {}
+    conditions: list[dict[str, Any]] = []
+
     if camera_id and camera_id.strip():
-        base_filter["camera_id"] = camera_id.strip()
+        conditions.append({"camera_id": camera_id.strip()})
 
     if class_name and class_name.strip():
-        base_filter["class_name"] = {"$regex": f"^{re.escape(class_name.strip())}$", "$options": "i"}
+        cls_pattern = f"^{re.escape(class_name.strip())}$"
+        conditions.append({
+            "$or": [
+                {"class_name": {"$regex": cls_pattern, "$options": "i"}},
+                {"detections.class_name": {"$regex": cls_pattern, "$options": "i"}},
+            ]
+        })
 
     if min_confidence is not None and min_confidence > 0:
         threshold = min_confidence / 100.0 if min_confidence > 1.0 else min_confidence
-        base_filter["confidence"] = {"$gte": round(threshold, 4)}
+        conditions.append({"confidence": {"$gte": round(threshold, 4)}})
 
     dt_from = parse_datetime(date_from)
     dt_to = parse_datetime(date_to)
 
     if dt_from or dt_to:
-        time_query: dict = {}
+        str_cond: dict[str, str] = {}
+        dt_cond: dict[str, datetime] = {}
         if dt_from:
-            time_query["$gte"] = dt_from
+            str_cond["$gte"] = dt_from.isoformat().replace("+00:00", "Z")
+            dt_cond["$gte"] = dt_from
         if dt_to:
-            time_query["$lte"] = dt_to
-        base_filter["timestamp"] = time_query
+            clean_to = date_to.strip() if date_to else ""
+            if len(clean_to) == 10:
+                dt_to = dt_to.replace(hour=23, minute=59, second=59, microsecond=999999)
+            str_cond["$lte"] = dt_to.isoformat().replace("+00:00", "Z")
+            dt_cond["$lte"] = dt_to
+        conditions.append({
+            "$or": [
+                {"timestamp": str_cond},
+                {"timestamp": dt_cond},
+            ]
+        })
 
     if search and search.strip():
         term = re.escape(search.strip())
-        base_filter["$or"] = [
-            {"class_name": {"$regex": term, "$options": "i"}},
-            {"camera_id": {"$regex": term, "$options": "i"}},
-            {"camera_name": {"$regex": term, "$options": "i"}},
-        ]
+        conditions.append({
+            "$or": [
+                {"class_name": {"$regex": term, "$options": "i"}},
+                {"detections.class_name": {"$regex": term, "$options": "i"}},
+                {"camera_id": {"$regex": term, "$options": "i"}},
+                {"camera_name": {"$regex": term, "$options": "i"}},
+            ]
+        })
+
+    base_filter: dict[str, Any] = {}
+    if len(conditions) == 1:
+        base_filter = conditions[0]
+    elif len(conditions) > 1:
+        base_filter = {"$and": conditions}
 
     return get_tenant_filter(current_user, base_filter)
 
 
 def format_detection_response(doc: dict) -> DetectionEventResponse:
     raw_dets = doc.get("detections", [])
-    items = [
-        DetectionItem(
-            class_id=d.get("class_id", 0),
-            class_name=d.get("class_name", "object"),
-            confidence=d.get("confidence", 0.0),
-            bbox=d.get("bbox", []),
-        )
-        for d in raw_dets
-    ]
+    if raw_dets:
+        items = [
+            DetectionItem(
+                class_id=d.get("class_id", 0),
+                class_name=d.get("class_name", "object"),
+                confidence=d.get("confidence", 0.0),
+                bbox=d.get("bbox", []),
+            )
+            for d in raw_dets
+        ]
+    elif doc.get("class_name"):
+        items = [
+            DetectionItem(
+                class_id=0,
+                class_name=doc.get("class_name", "object"),
+                confidence=doc.get("confidence", 0.0),
+                bbox=doc.get("bounding_box") or [],
+            )
+        ]
+    else:
+        items = []
+
     ts = doc.get("timestamp")
     if isinstance(ts, str):
         ts = parse_datetime(ts) or utc_now()

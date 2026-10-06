@@ -11,6 +11,7 @@ from backend.app.config import settings
 from backend.app.db import db
 from backend.app.models import Camera, CameraStatus, User, UserRole, utc_now
 from backend.app.permissions import get_tenant_filter, require_permission
+from backend.app.routes.logs import record_audit_log
 from backend.app.schemas import (
     ApiResponse,
     CameraCreate,
@@ -147,8 +148,8 @@ async def create_camera(
                 # Set CONNECTING — stream_manager lifecycle will transition to ONLINE
                 # only after MediaMTX publisher is verified
                 camera.status = CameraStatus.CONNECTING
-                if camera.ai_enabled:
-                    ai_pipeline_manager.start_pipeline(camera)
+                # 24/7 AI inference runs continuously for every configured camera
+                ai_pipeline_manager.start_pipeline(camera)
         except Exception as exc:
             LOGGER.error("Auto-start stream failed for new camera %s: %s", camera.name, exc)
 
@@ -302,9 +303,8 @@ async def start_camera_stream(
             detail=f"Failed to start camera stream: {err or 'FFmpeg process failed to launch'}",
         )
 
-    # Start AI pipeline if enabled
-    if camera.ai_enabled:
-        ai_pipeline_manager.start_pipeline(camera)
+    # 24/7 AI inference runs continuously for every configured camera
+    ai_pipeline_manager.start_pipeline(camera)
 
     # Set CONNECTING — lifecycle thread will update to ONLINE after publisher verified
     await db.cameras.update_one({"id": camera.id}, {"$set": {"status": CameraStatus.CONNECTING.value}})
@@ -366,11 +366,19 @@ async def restart_camera_stream(
         fps=camera.configured_fps,
     )
 
-    if camera.ai_enabled:
-        ai_pipeline_manager.start_pipeline(camera)
+    # 24/7 AI inference runs continuously for every configured camera
+    ai_pipeline_manager.start_pipeline(camera)
 
     # Set CONNECTING — will transition to ONLINE once publisher confirmed
     await db.cameras.update_one({"id": camera.id}, {"$set": {"status": CameraStatus.CONNECTING.value}})
+    await record_audit_log(
+        action="camera:restart",
+        resource_type="camera",
+        resource_id=camera.id,
+        user_id=current_user.id,
+        organization_id=camera.organization_id,
+        details={"name": camera.name},
+    )
 
     return ApiResponse(
         success=True,
@@ -400,12 +408,20 @@ async def enable_camera(
         resolution=camera.configured_resolution,
         fps=camera.configured_fps,
     )
-    if camera.ai_enabled:
-        ai_pipeline_manager.start_pipeline(camera)
+    # 24/7 AI inference runs continuously for every configured camera
+    ai_pipeline_manager.start_pipeline(camera)
 
     await db.cameras.update_one(
         {"id": camera.id},
         {"$set": {"enabled": True, "status": CameraStatus.ONLINE.value if started else CameraStatus.OFFLINE.value}}
+    )
+    await record_audit_log(
+        action="camera:enable",
+        resource_type="camera",
+        resource_id=camera.id,
+        user_id=current_user.id,
+        organization_id=camera.organization_id,
+        details={"name": camera.name, "started": started},
     )
 
     return ApiResponse(
@@ -433,6 +449,14 @@ async def disable_camera(
     await db.cameras.update_one(
         {"id": camera.id},
         {"$set": {"enabled": False, "status": CameraStatus.OFFLINE.value}}
+    )
+    await record_audit_log(
+        action="camera:disable",
+        resource_type="camera",
+        resource_id=camera.id,
+        user_id=current_user.id,
+        organization_id=camera.organization_id,
+        details={"name": camera.name},
     )
 
     return ApiResponse(

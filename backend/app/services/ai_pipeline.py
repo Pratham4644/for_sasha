@@ -215,6 +215,7 @@ class CameraAIPipeline:
                 LOGGER.error("Failed to start AI stream FFmpeg publisher: %s", exc)
 
             last_sample_time = 0.0
+            frame_count = 0
             current_detections: list[dict[str, Any]] = []
 
             try:
@@ -230,7 +231,10 @@ class CameraAIPipeline:
                     # Sample frame for AI inference at configured interval
                     if now - last_sample_time >= self.inference_interval:
                         last_sample_time = now
-                        # Encode frame as JPEG for SageMaker
+                        frame_count += 1
+                        frame_ts = utc_now().isoformat()
+
+                        # Encode frame as JPEG for SageMaker / local model
                         success, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                         if success:
                             jpeg_bytes = encoded.tobytes()
@@ -242,6 +246,22 @@ class CameraAIPipeline:
                                     if d.get("confidence", 0.0) >= self.confidence_threshold
                                 ]
                                 current_detections = valid_dets
+
+                                for d in valid_dets:
+                                    LOGGER.info(
+                                        "AI Detection: camera_id=%s frame_id=%d timestamp=%s class_id=%s class_name=%s confidence=%.2f raw_bbox=%s final_bbox=%s frame_dims=%dx%d latency=%.1fms",
+                                        self.camera_id,
+                                        frame_count,
+                                        frame_ts,
+                                        d.get("class_id"),
+                                        d.get("class_name"),
+                                        d.get("confidence", 0.0),
+                                        d.get("bbox"),
+                                        d.get("bbox"),
+                                        width,
+                                        height,
+                                        latency_ms,
+                                    )
 
                                 # If detections were made, record event to MongoDB and broadcast
                                 if valid_dets:

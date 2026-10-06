@@ -107,8 +107,8 @@ async def lifespan(app: FastAPI):
                             {"id": cam.id},
                             {"$set": {"status": CameraStatus.CONNECTING.value}},
                         )
-                        if cam.ai_enabled:
-                            ai_pipeline_manager.start_pipeline(cam)
+                        # AI inference runs 24/7 continuously for every configured camera
+                        ai_pipeline_manager.start_pipeline(cam)
                         LOGGER.info("Auto-started stream for camera '%s' (%s)", cam.name, cam.id)
                 except Exception as cam_err:
                     LOGGER.error("Error auto-starting camera %s: %s", doc.get("name"), cam_err)
