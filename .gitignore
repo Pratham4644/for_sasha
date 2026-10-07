@@ -322,7 +322,7 @@ docker-logs/
 # MEDIA / STREAMING TEMPORARY FILES
 # ============================================================
 
-*.ts
+
 *.m3u8
 *.m3u
 *.mp4
