@@ -32,6 +32,11 @@ class CameraStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class IngestionMode(str, Enum):
+    LOCAL = "local"
+    REMOTE_EDGE = "remote_edge"
+
+
 class User(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -79,6 +84,9 @@ class Camera(BaseModel):
     source_url_template: str
     media_path: str  # MediaMTX path e.g. camera_001
     credentials_ref: str | None = None  # Encrypted credentials (Fernet)
+    ingestion_mode: IngestionMode = IngestionMode.LOCAL
+    edge_gateway_id: str | None = None
+    stream_paused: bool = False
     enabled: bool = True
     ai_enabled: bool = True
     ai_model: str = "yolo"
@@ -86,6 +94,18 @@ class Camera(BaseModel):
     configured_resolution: str = "1280x720"
     configured_fps: float = 15.0
     status: CameraStatus = CameraStatus.UNKNOWN
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class EdgeGateway(BaseModel):
+    id: str = Field(default_factory=generate_uuid)
+    organization_id: str
+    name: str
+    token_hash: str
+    is_active: bool = True
+    last_heartbeat: datetime | None = None
+    last_seen_ip: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

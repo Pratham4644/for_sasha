@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from backend.app.routes.analytics import router as analytics_router
 from backend.app.routes.auth import router as auth_router
 from backend.app.routes.cameras import router as cameras_router
+from backend.app.routes.edge import router as edge_router
 from backend.app.routes.detections import router as detections_router
 from backend.app.routes.health import router as health_router
 from backend.app.routes.logs import router as logs_router
@@ -25,6 +26,7 @@ api_router.include_router(sites_router)
 api_router.include_router(organizations_router)
 api_router.include_router(health_router)
 api_router.include_router(analytics_router)
+api_router.include_router(edge_router)
 
 api_v1_router = APIRouter(prefix="/api/v1")
 api_v1_router.include_router(auth_router)
@@ -37,5 +39,6 @@ api_v1_router.include_router(sites_router)
 api_v1_router.include_router(organizations_router)
 api_v1_router.include_router(health_router)
 api_v1_router.include_router(analytics_router)
+api_v1_router.include_router(edge_router)
 
 __all__ = ["api_router", "api_v1_router", "health_router", "websocket_router"]

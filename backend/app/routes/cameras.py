@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from backend.app.auth import encrypt_camera_credentials, get_current_user
 from backend.app.config import settings
 from backend.app.db import db
-from backend.app.models import Camera, CameraStatus, User, UserRole, utc_now
+from backend.app.models import Camera, CameraStatus, IngestionMode, User, UserRole, utc_now
 from backend.app.permissions import get_tenant_filter, require_permission
 from backend.app.routes.logs import record_audit_log
 from backend.app.schemas import (
@@ -28,6 +28,13 @@ from backend.app.services.camera import (
     sanitize_source_url,
 )
 from backend.app.services.mediamtx import mediamtx_service
+from backend.app.services.ingestion import (
+    effective_ingestion_mode,
+    is_private_source,
+    start_camera_ingestion,
+    stop_camera_ingestion,
+    uses_local_stream_manager,
+)
 from backend.app.services.stream_manager import stream_manager, test_camera_connectivity
 
 LOGGER = logging.getLogger("camera.platform.routes.cameras")
@@ -114,6 +121,12 @@ async def create_camera(
         if req.ai_enabled:
             await mediamtx_service.provision_path(f"{media_path}-ai", source="publisher")
 
+    ingestion_mode = req.ingestion_mode
+    if ingestion_mode is None:
+        ingestion_mode = (
+            IngestionMode.REMOTE_EDGE if is_private_source(clean_url) else IngestionMode.LOCAL
+        )
+
     # 5. Persist to MongoDB
     camera = Camera(
         id=req.camera_id if req.camera_id else str(uuid.uuid4()),
@@ -124,6 +137,8 @@ async def create_camera(
         source_url_template=clean_url,
         media_path=media_path,
         credentials_ref=credentials_ref,
+        ingestion_mode=ingestion_mode,
+        edge_gateway_id=req.edge_gateway_id,
         enabled=req.enabled,
         ai_enabled=req.ai_enabled,
         ai_model=req.ai_model,
@@ -135,21 +150,10 @@ async def create_camera(
 
     if req.enabled:
         try:
-            started = stream_manager.start_camera(
-                camera_id=camera.id,
-                camera_url=camera.source_url_template,
-                username=username,
-                password=password,
-                media_path=camera.media_path,
-                resolution=camera.configured_resolution,
-                fps=camera.configured_fps,
-            )
-            if started:
-                # Set CONNECTING — stream_manager lifecycle will transition to ONLINE
-                # only after MediaMTX publisher is verified
-                camera.status = CameraStatus.CONNECTING
-                # 24/7 AI inference runs continuously for every configured camera
-                ai_pipeline_manager.start_pipeline(camera)
+            started, message = await start_camera_ingestion(camera)
+            camera.status = CameraStatus.CONNECTING
+            if not started and uses_local_stream_manager(camera):
+                LOGGER.warning("Auto-start stream failed for new camera %s: %s", camera.name, message)
         except Exception as exc:
             LOGGER.error("Auto-start stream failed for new camera %s: %s", camera.name, exc)
 
@@ -214,6 +218,10 @@ async def update_camera(
         updates["ai_model"] = req.ai_model
     if req.ai_endpoint is not None:
         updates["ai_endpoint"] = req.ai_endpoint
+    if req.ingestion_mode is not None:
+        updates["ingestion_mode"] = req.ingestion_mode.value
+    if req.edge_gateway_id is not None:
+        updates["edge_gateway_id"] = req.edge_gateway_id
 
     if req.source_url is not None:
         clean_url, ext_user, ext_pass = sanitize_source_url(req.source_url)
@@ -234,10 +242,9 @@ async def update_camera(
     if req.enabled is not None:
         updates["enabled"] = req.enabled
         if not req.enabled:
-            # Stop streaming if camera was disabled
-            stream_manager.stop_camera(camera.id)
-            ai_pipeline_manager.stop_pipeline(camera.id)
+            await stop_camera_ingestion(camera)
             updates["status"] = CameraStatus.OFFLINE.value
+            updates["stream_paused"] = False
 
     await db.cameras.update_one({"id": camera.id}, {"$set": updates})
     updated_doc = await db.cameras.find_one({"id": camera.id})
@@ -253,8 +260,7 @@ async def delete_camera(
     camera = await _resolve_camera(camera_id, current_user)
 
     # 1. Stop active streaming and AI processes
-    stream_manager.stop_camera(camera.id)
-    ai_pipeline_manager.stop_pipeline(camera.id)
+    await stop_camera_ingestion(camera)
 
     # 2. Delete MediaMTX paths
     await mediamtx_service.delete_path(camera.media_path)
@@ -284,30 +290,19 @@ async def start_camera_stream(
             detail="Cannot start disabled camera. Enable it first.",
         )
 
-    username, password = get_camera_credentials(camera)
-
-    started = stream_manager.start_camera(
-        camera_id=camera.id,
-        camera_url=camera.source_url_template,
-        username=username,
-        password=password,
-        media_path=camera.media_path,
-        resolution=camera.configured_resolution,
-        fps=camera.configured_fps,
+    await db.cameras.update_one(
+        {"id": camera.id},
+        {"$set": {"stream_paused": False, "status": CameraStatus.CONNECTING.value}},
     )
+    camera.stream_paused = False
 
-    if not started:
-        err = stream_manager.get_last_error(camera.id)
+    started, message = await start_camera_ingestion(camera)
+
+    if uses_local_stream_manager(camera) and not started:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start camera stream: {err or 'FFmpeg process failed to launch'}",
+            detail=f"Failed to start camera stream: {message}",
         )
-
-    # 24/7 AI inference runs continuously for every configured camera
-    ai_pipeline_manager.start_pipeline(camera)
-
-    # Set CONNECTING — lifecycle thread will update to ONLINE after publisher verified
-    await db.cameras.update_one({"id": camera.id}, {"$set": {"status": CameraStatus.CONNECTING.value}})
 
     urls = mediamtx_service.get_stream_urls(camera.media_path)
     return ApiResponse(
@@ -315,7 +310,8 @@ async def start_camera_stream(
         data={
             "camera_id": camera.id,
             "status": "connecting",
-            "message": "Camera stream starting — will become ONLINE once publisher is confirmed.",
+            "ingestion_mode": effective_ingestion_mode(camera).value,
+            "message": message,
             "streams": urls,
         },
     )
@@ -329,17 +325,23 @@ async def stop_camera_stream(
     """Stops the camera's FFmpeg stream and AI pipeline cleanly."""
     camera = await _resolve_camera(camera_id, current_user)
 
-    stream_manager.stop_camera(camera.id)
-    ai_pipeline_manager.stop_pipeline(camera.id)
+    await stop_camera_ingestion(camera)
 
-    await db.cameras.update_one({"id": camera.id}, {"$set": {"status": CameraStatus.OFFLINE.value}})
+    await db.cameras.update_one(
+        {"id": camera.id},
+        {"$set": {"status": CameraStatus.OFFLINE.value, "stream_paused": True}},
+    )
 
     return ApiResponse(
         success=True,
         data={
             "camera_id": camera.id,
             "status": "stopped",
-            "message": "Camera stream and AI worker stopped.",
+            "message": (
+                "Remote-edge stream paused; edge gateway will stop publishing on next poll."
+                if not uses_local_stream_manager(camera)
+                else "Camera stream and AI worker stopped."
+            ),
         },
     )
 
@@ -352,25 +354,19 @@ async def restart_camera_stream(
     """Restarts stream ingestion and AI pipeline."""
     camera = await _resolve_camera(camera_id, current_user)
 
-    stream_manager.stop_camera(camera.id)
-    ai_pipeline_manager.stop_pipeline(camera.id)
-
-    username, password = get_camera_credentials(camera)
-    stream_manager.start_camera(
-        camera_id=camera.id,
-        camera_url=camera.source_url_template,
-        username=username,
-        password=password,
-        media_path=camera.media_path,
-        resolution=camera.configured_resolution,
-        fps=camera.configured_fps,
+    await stop_camera_ingestion(camera)
+    await db.cameras.update_one(
+        {"id": camera.id},
+        {"$set": {"stream_paused": False, "status": CameraStatus.CONNECTING.value}},
     )
+    camera.stream_paused = False
 
-    # 24/7 AI inference runs continuously for every configured camera
-    ai_pipeline_manager.start_pipeline(camera)
-
-    # Set CONNECTING — will transition to ONLINE once publisher confirmed
-    await db.cameras.update_one({"id": camera.id}, {"$set": {"status": CameraStatus.CONNECTING.value}})
+    started, message = await start_camera_ingestion(camera)
+    if uses_local_stream_manager(camera) and not started:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to restart camera stream: {message}",
+        )
     await record_audit_log(
         action="camera:restart",
         resource_type="camera",
@@ -385,7 +381,8 @@ async def restart_camera_stream(
         data={
             "camera_id": camera.id,
             "status": "connecting",
-            "message": "Camera stream restarting — will become ONLINE once publisher is confirmed.",
+            "ingestion_mode": effective_ingestion_mode(camera).value,
+            "message": message,
         },
     )
 
@@ -397,23 +394,18 @@ async def enable_camera(
 ):
     """Enables the camera and starts ingestion stream & AI pipeline."""
     camera = await _resolve_camera(camera_id, current_user)
-    username, password = get_camera_credentials(camera)
 
-    started = stream_manager.start_camera(
-        camera_id=camera.id,
-        camera_url=camera.source_url_template,
-        username=username,
-        password=password,
-        media_path=camera.media_path,
-        resolution=camera.configured_resolution,
-        fps=camera.configured_fps,
-    )
-    # 24/7 AI inference runs continuously for every configured camera
-    ai_pipeline_manager.start_pipeline(camera)
+    started, message = await start_camera_ingestion(camera)
 
     await db.cameras.update_one(
         {"id": camera.id},
-        {"$set": {"enabled": True, "status": CameraStatus.ONLINE.value if started else CameraStatus.OFFLINE.value}}
+        {
+            "$set": {
+                "enabled": True,
+                "stream_paused": False,
+                "status": CameraStatus.CONNECTING.value,
+            }
+        },
     )
     await record_audit_log(
         action="camera:enable",
@@ -429,8 +421,9 @@ async def enable_camera(
         data={
             "camera_id": camera.id,
             "enabled": True,
-            "status": "online" if started else "offline",
-            "message": f"Camera {camera.name} enabled and stream started.",
+            "status": "connecting",
+            "ingestion_mode": effective_ingestion_mode(camera).value,
+            "message": message if not uses_local_stream_manager(camera) or started else message,
         },
     )
 
@@ -443,12 +436,11 @@ async def disable_camera(
     """Disables the camera and cleanly stops ingestion stream & AI pipeline."""
     camera = await _resolve_camera(camera_id, current_user)
 
-    stream_manager.stop_camera(camera.id)
-    ai_pipeline_manager.stop_pipeline(camera.id)
+    await stop_camera_ingestion(camera)
 
     await db.cameras.update_one(
         {"id": camera.id},
-        {"$set": {"enabled": False, "status": CameraStatus.OFFLINE.value}}
+        {"$set": {"enabled": False, "status": CameraStatus.OFFLINE.value, "stream_paused": True}}
     )
     await record_audit_log(
         action="camera:disable",
@@ -478,9 +470,10 @@ async def get_camera_status(
     """Checks online status via MediaMTX and active FFmpeg processes."""
     camera = await _resolve_camera(camera_id, current_user)
     media_status = await mediamtx_service.get_path_status(camera.media_path)
-    is_ffmpeg_running = stream_manager.is_running(camera.id)
+    is_local = uses_local_stream_manager(camera)
+    is_ffmpeg_running = stream_manager.is_running(camera.id) if is_local else False
     is_ai_running = ai_pipeline_manager.is_running(camera.id)
-    stream_info = stream_manager.get_stream_info(camera.id)
+    stream_info = stream_manager.get_stream_info(camera.id) if is_local else {}
 
     # True ONLINE requires MediaMTX sourceReady=true (frames actually flowing)
     video_available = bool(media_status.get("video_available") or media_status.get("source_ready"))
@@ -489,7 +482,10 @@ async def get_camera_status(
     if video_available:
         effective_status = "online"
         new_db_status = CameraStatus.ONLINE
-    elif is_ffmpeg_running or publisher_connected:
+    elif (is_local and is_ffmpeg_running) or publisher_connected:
+        effective_status = "connecting"
+        new_db_status = CameraStatus.CONNECTING
+    elif not is_local and camera.enabled and not camera.stream_paused:
         effective_status = "connecting"
         new_db_status = CameraStatus.CONNECTING
     else:
@@ -507,6 +503,7 @@ async def get_camera_status(
             "name": camera.name,
             "status": effective_status.upper(),
             "online": effective_status == "online",
+            "ingestion_mode": effective_ingestion_mode(camera).value,
             "ffmpeg_running": is_ffmpeg_running,
             "mediamtx_publisher": bool(media_status.get("publisher_connected") or media_status.get("source_ready")),
             "mediamtx_source_ready": media_status.get("source_ready", False),
@@ -532,7 +529,11 @@ async def get_camera_stream(
     """Returns accessible stream URLs for the camera."""
     camera = await _resolve_camera(camera_id, current_user)
     media_status = await mediamtx_service.get_path_status(camera.media_path)
-    is_online = bool(media_status.get("online") or stream_manager.is_running(camera.id))
+    is_online = bool(
+        media_status.get("online")
+        or media_status.get("source_ready")
+        or (uses_local_stream_manager(camera) and stream_manager.is_running(camera.id))
+    )
 
     urls = mediamtx_service.get_stream_urls(camera.media_path)
 

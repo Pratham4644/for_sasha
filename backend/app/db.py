@@ -99,6 +99,12 @@ class Database:
             raise DatabaseConnectionError("Database not connected")
         return self.db["logs"]
 
+    @property
+    def edge_gateways(self) -> AsyncCollection:
+        if self.db is None:
+            raise DatabaseConnectionError("Database not connected")
+        return self.db["edge_gateways"]
+
     async def ensure_indexes(self) -> None:
         """Creates required MongoDB indexes across collections."""
         if not self._connected or self.db is None:
@@ -146,6 +152,13 @@ class Database:
             await self.logs.create_indexes([
                 IndexModel([("organization_id", ASCENDING), ("created_at", DESCENDING)], name="idx_logs_org_created"),
                 IndexModel([("resource_type", ASCENDING)], name="idx_logs_resource_type"),
+            ])
+
+            # 6. Edge Gateway Indexes
+            await self.edge_gateways.create_indexes([
+                IndexModel([("id", ASCENDING)], unique=True, name="idx_edge_gateways_id_unique"),
+                IndexModel([("token_hash", ASCENDING)], unique=True, name="idx_edge_gateways_token_hash_unique"),
+                IndexModel([("organization_id", ASCENDING)], name="idx_edge_gateways_org"),
             ])
 
             LOGGER.info("All MongoDB indexes verified and created successfully.")

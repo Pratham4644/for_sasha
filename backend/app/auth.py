@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
+import secrets
 from typing import Any
 import bcrypt
 from cryptography.fernet import Fernet, InvalidToken
@@ -176,3 +177,13 @@ async def get_optional_user(request: Request) -> User | None:
         return await get_current_user(request)
     except HTTPException:
         return None
+
+
+# --- Edge Gateway Token Helpers ---
+
+def hash_edge_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def verify_edge_token(plain_token: str, token_hash: str) -> bool:
+    return secrets.compare_digest(hash_edge_token(plain_token), token_hash)

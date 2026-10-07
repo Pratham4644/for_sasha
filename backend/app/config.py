@@ -209,6 +209,24 @@ class Settings(BaseSettings):
         validation_alias="RETENTION_CLEANUP_HOURS",
     )
 
+    # Edge Gateway (remote LAN camera ingestion)
+    edge_gateway_token: str | None = Field(
+        default=None,
+        validation_alias="EDGE_GATEWAY_TOKEN",
+    )
+    edge_gateway_org_id: str | None = Field(
+        default=None,
+        validation_alias="EDGE_GATEWAY_ORG_ID",
+    )
+    mediamtx_publish_host: str | None = Field(
+        default=None,
+        validation_alias="MEDIAMTX_PUBLISH_HOST",
+    )
+    remote_edge_status_interval_seconds: int = Field(
+        default=15,
+        validation_alias="REMOTE_EDGE_STATUS_INTERVAL_SECONDS",
+    )
+
     @field_validator("debug", mode="before")
     @classmethod
     def parse_debug_flag(cls, value: object) -> object:
@@ -223,6 +241,13 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [orig.strip() for orig in self.frontend_origin.split(",") if orig.strip()]
+
+    @property
+    def edge_publish_host(self) -> str:
+        """Public hostname/IP edge workers use to publish RTSP into MediaMTX."""
+        if self.mediamtx_publish_host:
+            return self.mediamtx_publish_host.strip()
+        return self.mediamtx_host
 
     @model_validator(mode="after")
     def validate_production_security(self) -> Settings:

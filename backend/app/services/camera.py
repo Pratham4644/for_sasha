@@ -66,6 +66,13 @@ def format_camera_response(camera: Camera) -> CameraResponse:
         enabled=camera.enabled,
         ai_enabled=camera.ai_enabled,
         ai_model=camera.ai_model,
+        ingestion_mode=(
+            camera.ingestion_mode.value
+            if hasattr(camera.ingestion_mode, "value")
+            else str(camera.ingestion_mode)
+        ),
+        edge_gateway_id=camera.edge_gateway_id,
+        stream_paused=camera.stream_paused,
         status=camera.status.value if hasattr(camera.status, "value") else str(camera.status),
         created_at=camera.created_at,
         updated_at=camera.updated_at,

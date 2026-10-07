@@ -13,6 +13,8 @@ from backend.app.middleware.error_handler import register_error_handlers
 from backend.app.middleware.request_id import RequestIdMiddleware
 from backend.app.routes import api_router, api_v1_router, health_router, websocket_router
 from backend.app.services.ai_pipeline import ai_pipeline_manager
+from backend.app.services.edge_status import remote_edge_status_loop
+from backend.app.services.ingestion import start_camera_ingestion, uses_local_stream_manager
 from backend.app.services.retention import retention_cleanup_loop
 from backend.app.services.stream_manager import StreamState, stream_manager
 
@@ -85,31 +87,23 @@ async def lifespan(app: FastAPI):
         # Auto-start active cameras on backend startup
         try:
             from backend.app.models import Camera, CameraStatus
-            from backend.app.services.camera import get_camera_credentials
-            cursor = db.cameras.find({"enabled": True})
+            cursor = db.cameras.find({"enabled": True, "stream_paused": {"$ne": True}})
             async for doc in cursor:
                 try:
                     cam = Camera(**doc)
-                    username, password = get_camera_credentials(cam)
-                    started = stream_manager.start_camera(
-                        camera_id=cam.id,
-                        camera_url=cam.source_url_template,
-                        username=username,
-                        password=password,
-                        media_path=cam.media_path,
-                        resolution=cam.configured_resolution,
-                        fps=cam.configured_fps,
+                    started, message = await start_camera_ingestion(cam)
+                    await db.cameras.update_one(
+                        {"id": cam.id},
+                        {"$set": {"status": CameraStatus.CONNECTING.value}},
                     )
-                    if started:
-                        # Set CONNECTING — lifecycle callback will update to ONLINE
-                        # after MediaMTX publisher is verified
-                        await db.cameras.update_one(
-                            {"id": cam.id},
-                            {"$set": {"status": CameraStatus.CONNECTING.value}},
-                        )
-                        # AI inference runs 24/7 continuously for every configured camera
-                        ai_pipeline_manager.start_pipeline(cam)
-                        LOGGER.info("Auto-started stream for camera '%s' (%s)", cam.name, cam.id)
+                    mode_label = "remote-edge" if not uses_local_stream_manager(cam) else "local"
+                    LOGGER.info(
+                        "Auto-started %s ingestion for camera '%s' (%s): %s",
+                        mode_label,
+                        cam.name,
+                        cam.id,
+                        message if not started else "started",
+                    )
                 except Exception as cam_err:
                     LOGGER.error("Error auto-starting camera %s: %s", doc.get("name"), cam_err)
         except Exception as exc:
@@ -117,14 +111,16 @@ async def lifespan(app: FastAPI):
     else:
         LOGGER.warning("MongoDB not connected on startup. Database queries will fail closed.")
 
-    # Launch retention background worker
+    # Launch retention and remote-edge status background workers
     retention_task = asyncio.create_task(retention_cleanup_loop())
+    edge_status_task = asyncio.create_task(remote_edge_status_loop())
 
     yield
 
     # 2. Shutdown
     LOGGER.info("Shutting down %s...", settings.app_name)
     retention_task.cancel()
+    edge_status_task.cancel()
 
     try:
         stream_manager.stop_all()

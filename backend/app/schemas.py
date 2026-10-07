@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Generic, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.models import DetectionItem, UserRole
+from backend.app.models import DetectionItem, IngestionMode, UserRole
 
 T = TypeVar("T")
 
@@ -62,6 +62,8 @@ class CameraCreate(BaseModel):
     media_path: str | None = None
     username: str | None = None
     password: str | None = None
+    ingestion_mode: IngestionMode | None = None
+    edge_gateway_id: str | None = None
     configured_resolution: str = "1280x720"
     configured_fps: float = 15.0
     enabled: bool = True
@@ -78,6 +80,8 @@ class CameraUpdate(BaseModel):
     media_path: str | None = None
     username: str | None = None
     password: str | None = None
+    ingestion_mode: IngestionMode | None = None
+    edge_gateway_id: str | None = None
     configured_resolution: str | None = None
     configured_fps: float | None = None
     enabled: bool | None = None
@@ -102,6 +106,9 @@ class CameraResponse(BaseModel):
     enabled: bool
     ai_enabled: bool
     ai_model: str
+    ingestion_mode: str
+    edge_gateway_id: str | None = None
+    stream_paused: bool = False
     status: str
     created_at: datetime
     updated_at: datetime
