@@ -32,7 +32,7 @@ protocols: [tcp]
 # ---------------------------------------------------------------------------
 webrtc: yes
 webrtcAddress: :8889
-webrtcAllowOrigins: ['*']
+webrtcAllowOrigins: ["*"]
 # WebRTC Local / Public IP handling
 webrtcHandshakeTimeout: 10s
 
@@ -41,7 +41,7 @@ webrtcHandshakeTimeout: 10s
 # ---------------------------------------------------------------------------
 hls: yes
 hlsAddress: :8888
-hlsAllowOrigins: ['*']
+hlsAllowOrigins: ["*"]
 hlsVariant: mpegts
 hlsSegmentDuration: 1s
 hlsSegmentCount: 3
@@ -58,7 +58,7 @@ apiAddress: 0.0.0.0:9997
 authInternalUsers:
   # Internal / Edge publisher account used by FFmpeg and AI workers
   - user: edge_publisher
-    pass: dev_mediamtx_pub_pwd_secure
+    pass: "6044269b567a0b4bc7ff2c4b088221c0ca08a402f31eb9fd11b66ffb620c7da8"
     ips: []
     permissions:
       - action: publish
@@ -76,7 +76,7 @@ authInternalUsers:
 
   # Frontend WebRTC / HLS reader account
   - user: webrtc_reader
-    pass: dev_mediamtx_read_pwd_secure
+    pass: "853e87d9e9476267058773c58eb540ebce496d8cbb157e8759bcf5a80125f5da"
     ips: []
     permissions:
       - action: read
