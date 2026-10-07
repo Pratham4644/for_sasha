@@ -1,0 +1,398 @@
+# ============================================================
+# SECRETS & ENVIRONMENT VARIABLES
+# ============================================================
+
+.env
+.env.*
+!.env.example
+
+# Credentials / secret files
+*.secret
+*.secrets
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# TLS / SSL certificates and private keys
+*.key
+*.crt
+*.cer
+
+# Cloud / deployment credentials
+.aws/
+.gcloud/
+.azure/
+credentials.json
+service-account*.json
+
+# SSH keys accidentally placed in project
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+
+# ============================================================
+# LOGS
+# ============================================================
+
+*.log
+*.log.*
+logs/
+log/
+backend-live.err.log
+backend-live.out.log
+
+
+# ============================================================
+# PYTHON
+# ============================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+.python-version
+
+
+# ============================================================
+# NODE / REACT / VITE
+# ============================================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+.npm/
+.yarn/
+.pnpm-store/
+
+.vite/
+.cache/
+.parcel-cache/
+.turbo/
+
+# Build output
+frontend/dist/
+frontend/.vite/
+
+# General frontend build output
+dist/
+
+
+# ============================================================
+# TYPESCRIPT
+# ============================================================
+
+*.tsbuildinfo
+
+
+# ============================================================
+# TEST / COVERAGE
+# ============================================================
+
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+
+# ============================================================
+# DATABASE / LOCAL RUNTIME DATA
+# ============================================================
+
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+database.db
+database.sqlite
+
+data/
+runtime/
+tmp/
+temp/
+
+# Local vector databases / AI caches
+chroma/
+chroma_db/
+.chromadb/
+*.index
+
+
+# ============================================================
+# AI / ML MODEL FILES
+# ============================================================
+
+# Large trained models
+*.pt
+*.pth
+*.onnx
+*.engine
+*.weights
+*.h5
+*.keras
+*.ckpt
+*.safetensors
+*.bin
+
+# Model/cache directories
+models/
+model_cache/
+weights/
+checkpoints/
+runs/
+wandb/
+mlruns/
+
+
+# ============================================================
+# YOLO / COMPUTER VISION OUTPUT
+# ============================================================
+
+runs/
+runs/detect/
+runs/train/
+runs/segment/
+
+predictions/
+detections/
+inference/
+output/
+outputs/
+
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp
+
+# IMPORTANT:
+# If your application stores required frontend assets/images
+# inside the repository, remove the image rules above.
+
+
+# ============================================================
+# PYTHON / AI TEMP FILES
+# ============================================================
+
+*.pkl
+*.pickle
+*.joblib
+*.npy
+*.npz
+
+
+# ============================================================
+# IDE / EDITOR
+# ============================================================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*.sublime-workspace
+*.sublime-project
+
+# VS Code local history
+.history/
+
+
+# ============================================================
+# OS FILES
+# ============================================================
+
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Windows Explorer temporary files
+$RECYCLE.BIN/
+
+
+# ============================================================
+# PROJECT TEMP / BACKUP FILES
+# ============================================================
+
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+
+*~
+*.swp
+
+
+# ============================================================
+# FRONTEND / GENERATED FILES
+# ============================================================
+
+frontend/node_modules/
+frontend/dist/
+
+# Don't commit generated frontend artifacts
+frontend/.env
+frontend/.env.*
+!.env.example
+
+# Don't commit local API/build caches
+frontend/.cache/
+frontend/.vite/
+
+
+# ============================================================
+# BACKEND GENERATED FILES
+# ============================================================
+
+backend/__pycache__/
+backend/.pytest_cache/
+backend/.mypy_cache/
+
+backend/*.log
+backend/logs/
+
+# Local backend environment
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+
+# ============================================================
+# EDGE DEVICE GENERATED FILES
+# ============================================================
+
+edge/__pycache__/
+edge/*.log
+edge/logs/
+edge/.env
+edge/.env.*
+
+
+# ============================================================
+# DOCKER / LOCAL DEVELOPMENT
+# ============================================================
+
+# Docker local overrides
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Docker generated/runtime files
+.docker/
+docker-data/
+docker-volumes/
+
+# Local container logs
+docker-logs/
+
+
+# ============================================================
+# MEDIA / STREAMING TEMPORARY FILES
+# ============================================================
+
+*.ts
+*.m3u8
+*.m3u
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.flv
+
+# HLS / stream cache
+hls/
+hls-cache/
+stream-cache/
+recordings/
+
+# RTSP temporary dumps
+*.sdp
+
+
+# ============================================================
+# SYSTEM / RUNTIME FILES
+# ============================================================
+
+*.pid
+*.sock
+*.lock
+
+.pid/
+pids/
+sockets/
+
+
+# ============================================================
+# GENERATED DOCUMENTATION / API OUTPUT
+# ============================================================
+
+# Uncomment these ONLY if generated automatically
+# openapi.generated.json
+# swagger.generated.json
+
+
+# ============================================================
+# LOCAL DEVELOPMENT SCRIPTS OUTPUT
+# ============================================================
+
+*.out
+*.err
+
+backend-live.*
+server-live.*
+debug.*
+
+
+# ============================================================
+# SECURITY / SCANNING OUTPUT
+# ============================================================
+
+.gitleaks/
+trivy-results.json
+bandit-report.json
+safety-report.json
+
+
+# ============================================================
+# LOCAL BACKUPS
+# ============================================================
+
+backup/
+backups/
+*.dump
+*.sql
+
+# Don't accidentally upload exported databases
+exports/
