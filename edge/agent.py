@@ -82,6 +82,34 @@ def _debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> N
     # endregion
 
 
+def warn_if_tailscale_derp(peer: str = "100.101.127.80") -> None:
+    """Log a warning when Tailscale cannot establish a direct peer connection."""
+    try:
+        result = subprocess.run(
+            ["tailscale", "ping", "-c", "1", peer],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        output = (result.stdout + result.stderr).lower()
+        if "direct connection not established" in output or "via derp" in output:
+            LOGGER.warning(
+                "Tailscale is using DERP relay (not direct). RTSP/TCP publish will be "
+                "severely throttled on India->Sydney paths. Fix: AWS SG UDP 41641, router "
+                "UPnP or UDP 41641 forward, then: tailscale ping --until-direct %s",
+                peer,
+            )
+            _debug_log(
+                "H7",
+                "agent.py:warn_if_tailscale_derp",
+                "tailscale derp detected",
+                {"peer": peer, "ping_snippet": result.stdout.strip()[-200:]},
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def check_tcp_reachable(host: str, port: int, timeout: float = 5.0) -> tuple[bool, str]:
     try:
         with socket.create_connection((host, int(port)), timeout=timeout):
@@ -234,6 +262,13 @@ class EdgeAgent:
         self.running = True
         self.mediamtx_host = MEDIAMTX_HOST
         self.mediamtx_port = MEDIAMTX_RTSP_PORT
+        self._derp_warned = False
+
+    def _warn_if_tailscale_derp(self) -> None:
+        if self._derp_warned:
+            return
+        warn_if_tailscale_derp()
+        self._derp_warned = True
 
     def fetch_config(self) -> dict[str, Any]:
         headers = {
@@ -329,6 +364,8 @@ class EdgeAgent:
                         reason,
                         self.mediamtx_port,
                     )
+
+                self._warn_if_tailscale_derp()
 
                 cameras = config.get("cameras", [])
                 _debug_log(

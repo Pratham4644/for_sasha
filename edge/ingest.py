@@ -199,6 +199,8 @@ def build_publish_url() -> str:
 
 
 def build_ffmpeg_command(source_url: str, publish_url: str) -> list[str]:
+    # IMPORTANT: Never add -use_wallclock_as_timestamps 1 — it breaks PTS and
+    # causes false "low FPS" symptoms. WAN throughput issues are network-layer.
     return [
         FFMPEG_BIN,
         "-hide_banner",
@@ -206,7 +208,6 @@ def build_ffmpeg_command(source_url: str, publish_url: str) -> list[str]:
         "-nostdin",
         "-rtsp_transport", "tcp",
         "-fflags", "+genpts",
-        "-use_wallclock_as_timestamps", "1",
         "-analyzeduration", "500000",
         "-probesize", "500000",
         "-i", source_url,
