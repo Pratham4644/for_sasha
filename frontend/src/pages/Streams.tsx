@@ -111,7 +111,7 @@ const StreamCell: React.FC<{
             <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
             <span className="text-xs font-mono">Negotiating WebRTC...</span>
           </div>
-        ) : error || !activeWhep ? (
+        ) : error || (!activeWhep && !activeHls) ? (
           <div className="p-4 text-center text-rose-400/80">
             <VideoOff className="w-8 h-8 mx-auto mb-2 text-rose-500/60" />
             <p className="text-xs font-medium">{error || 'Stream offline'}</p>

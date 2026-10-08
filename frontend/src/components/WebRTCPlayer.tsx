@@ -61,8 +61,9 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
   const mountedRef = useRef(true);
   const backoffRef = useRef(INITIAL_BACKOFF_MS);
 
-  // We default to HLS for instant, zero-failure playback across all platforms
-  const [activeProtocol, setActiveProtocol] = useState<StreamProtocol>('hls');
+  // WebRTC first; HLS is only used after a genuine WebRTC failure
+  const [activeProtocol, setActiveProtocol] = useState<StreamProtocol>('webrtc');
+  const webrtcConnectedRef = useRef(false);
   const [playbackState, setPlaybackState] = useState<PlaybackState>('idle');
   const playbackStateRef = useRef<PlaybackState>('idle');
 
@@ -103,6 +104,7 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
     clearTimers();
     abortRef.current?.abort();
     abortRef.current = null;
+    webrtcConnectedRef.current = false;
 
     // Clean up WebRTC
     const pc = pcRef.current;
@@ -136,6 +138,20 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
       videoRef.current.load();
     }
   }, [clearTimers]);
+
+  const requestHlsFallback = useCallback(
+    (reason: string) => {
+      if (!mountedRef.current || !resolvedHlsUrl) return;
+      if (webrtcConnectedRef.current) {
+        console.info('[WebRTC] Skipping HLS fallback — WebRTC is already connected.');
+        return;
+      }
+      console.warn(`[WebRTC] ${reason} Falling back to HLS.`);
+      closeStream();
+      setActiveProtocol('hls');
+    },
+    [closeStream, resolvedHlsUrl],
+  );
 
   // ── Reconnect scheduler ──────────────────────────────────────────────────
 
@@ -251,8 +267,9 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
     async (targetWhepUrl: string, fallbackHls: string) => {
       if (!targetWhepUrl) {
         if (fallbackHls) {
+          console.warn('[WebRTC] WHEP URL not configured. Using HLS fallback.');
+          closeStream();
           setActiveProtocol('hls');
-          startHls(fallbackHls);
           return;
         }
         updateState('failed', 'WebRTC WHEP endpoint not configured.');
@@ -260,6 +277,8 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
       }
 
       closeStream();
+      webrtcConnectedRef.current = false;
+      console.info('[WebRTC] Attempting WebRTC connection first:', targetWhepUrl);
       updateState('connecting', null);
 
       const generation = ++generationRef.current;
@@ -274,10 +293,13 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
       // Start fallback timer: if WebRTC doesn't connect in 3s, drop back to HLS
       if (fallbackHls) {
         fallbackTimerRef.current = setTimeout(() => {
-          if (isCurrent() && playbackStateRef.current !== 'connected') {
-            console.warn('[WebRTC] WebRTC handshake taking longer than expected. Switching to HLS...');
-            setActiveProtocol('hls');
-            startHls(fallbackHls);
+          if (
+            isCurrent() &&
+            !webrtcConnectedRef.current &&
+            playbackStateRef.current !== 'connected' &&
+            !videoRef.current?.srcObject
+          ) {
+            requestHlsFallback('Connection timeout (3s).');
           }
         }, WEBRTC_FALLBACK_TIMEOUT_MS);
       }
@@ -294,8 +316,10 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
         pc.ontrack = (event) => {
           if (!isCurrent() || !videoRef.current || !event.streams[0]) return;
           videoRef.current.srcObject = event.streams[0];
+          webrtcConnectedRef.current = true;
           backoffRef.current = INITIAL_BACKOFF_MS;
           updateState('connected', null);
+          console.info('[WebRTC] Connected successfully. HLS will not be initialized.');
 
           if (fallbackTimerRef.current) {
             clearTimeout(fallbackTimerRef.current);
@@ -314,6 +338,7 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
           if (!isCurrent()) return;
           const state = pc.iceConnectionState;
           if (state === 'connected' || state === 'completed') {
+            webrtcConnectedRef.current = true;
             backoffRef.current = INITIAL_BACKOFF_MS;
             updateState('connected', null);
             if (fallbackTimerRef.current) {
@@ -322,8 +347,7 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
             }
           } else if (state === 'failed') {
             if (fallbackHls) {
-              setActiveProtocol('hls');
-              startHls(fallbackHls);
+              requestHlsFallback('ICE connection failed.');
             } else {
               scheduleReconnect('failed', 'WebRTC ICE connection failed.');
             }
@@ -389,17 +413,16 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
       } catch (err: unknown) {
         if (abort.signal.aborted || !isCurrent()) return;
         const msg = err instanceof Error ? err.message : 'WebRTC connection failed';
-        console.warn('[WebRTC Error]:', msg);
+        console.error('[WebRTC] Failed to establish connection:', msg);
 
         if (fallbackHls) {
-          setActiveProtocol('hls');
-          startHls(fallbackHls);
+          requestHlsFallback(`Initialization failed (${msg}).`);
         } else {
           scheduleReconnect('failed', msg);
         }
       }
     },
-    [closeStream, readerCredentials, scheduleReconnect, startHls, updateState],
+    [closeStream, readerCredentials, requestHlsFallback, scheduleReconnect, updateState],
   );
 
   // ── Protocol Switch & Reconnect Handlers ──────────────────────────────────
@@ -432,6 +455,7 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
   useEffect(() => {
     mountedRef.current = true;
     backoffRef.current = INITIAL_BACKOFF_MS;
+    webrtcConnectedRef.current = false;
 
     if (autoPlay) {
       if (activeProtocol === 'hls') {
@@ -444,6 +468,7 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
     return () => {
       mountedRef.current = false;
       generationRef.current += 1;
+      webrtcConnectedRef.current = false;
       clearTimers();
       closeStream();
     };
@@ -550,7 +575,9 @@ export const WebRTCPlayer: React.FC<WebRTCPlayerProps> = ({
         <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center text-center p-4 gap-2 z-20 pointer-events-none">
           <RefreshCw className="w-7 h-7 text-emerald-400 animate-spin" />
           <p className="text-xs font-medium text-slate-300">
-            Buffering {activeProtocol.toUpperCase()} live stream...
+            {activeProtocol === 'webrtc'
+              ? 'Connecting via WebRTC...'
+              : `Buffering ${activeProtocol.toUpperCase()} live stream...`}
           </p>
         </div>
       )}
